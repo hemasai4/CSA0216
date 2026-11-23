@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hospital Queue Management System</title>
+<style>
+  :root { --bg:#f4f7fb; --card:#fff; --ink:#1c2733; --muted:#6b7a8c; --line:#e2e8f0;
+          --em:#d93025; --ur:#f29900; --no:#1e8e3e; --brand:#1a73e8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:4px 0 0; font-size:13px; opacity:.85; }
+  main { max-width:1100px; margin:20px auto; padding:0 16px; display:grid; gap:16px;
+         grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { margin:0 0 12px; font-size:16px; }
+  .wide { grid-column:1/-1; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 3px; }
+  input, select { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; }
+  button { background:var(--brand); color:#fff; border:0; padding:9px 14px; border-radius:6px;
+           font-size:14px; cursor:pointer; margin-top:12px; }
+  button.alt { background:#fff; color:var(--brand); border:1px solid var(--brand); }
+  button:disabled { opacity:.45; cursor:default; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  .tag { padding:2px 8px; border-radius:10px; color:#fff; font-size:12px; }
+  .p1 { background:var(--em); } .p2 { background:var(--ur); } .p3 { background:var(--no); }
+  .doc { display:flex; justify-content:space-between; align-items:center; padding:10px 0;
+         border-bottom:1px solid var(--line); gap:8px; }
+  .doc button { margin:0; padding:6px 10px; font-size:13px; }
+  .free { color:var(--no); font-weight:600; } .busy { color:var(--em); font-weight:600; }
+  .muted { color:var(--muted); font-size:13px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px; }
+  .stat { background:var(--bg); border-radius:8px; padding:10px; text-align:center; }
+  .stat b { display:block; font-size:20px; }
+  .stat span { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hospital Queue Management System</h1>
+  <p>Patient flow optimization with priority triage &middot; Demo clock: 1 real second = 1 minute &middot;
+     Clock: <span id="clock">0</span> min</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. Register patient</h2>
+    <form id="form">
+      <label>Name</label><input id="name" required>
+      <label>Age</label><input id="age" type="number" min="0" max="120" required>
+      <label>Complaint</label><input id="complaint" required>
+      <label>Priority</label>
+      <select id="priority">
+        <option value="1">1 - Emergency</option>
+        <option value="2">2 - Urgent</option>
+        <option value="3" selected>3 - Normal</option>
+      </select>
+      <button type="submit">Register &amp; issue token</button>
+    </form>
+    <p class="muted" id="msg"></p>
+  </section>
+
+  <section class="card">
+    <h2>2. Doctors</h2>
+    <div id="doctors"></div>
+    <button id="callNext">Call next patient</button>
+  </section>
+
+  <section class="card wide">
+    <h2>3. Waiting queue</h2>
+    <table>
+      <thead><tr><th>#</th><th>Token</th><th>Name</th><th>Complaint</th><th>Priority</th>
+        <th>Waiting so far</th><th>Estimated wait</th></tr></thead>
+      <tbody id="queue"></tbody>
+    </table>
+    <p class="muted" id="empty"></p>
+  </section>
+
+  <section class="card wide">
+    <h2>4. Statistics</h2>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>5. Simulation: normal queue vs priority queue</h2>
+    <p class="muted">Simulates one busy 8-hour day with 3 doctors. Both runs use exactly the same patients.
+      Emergency and urgent patients wait less; normal patients wait a little longer (the trade-off).</p>
+    <button class="alt" id="simBtn">Run simulation</button>
+    <table id="simTable" style="margin-top:12px;display:none">
+      <thead><tr><th>Average wait (min)</th><th>Normal FIFO queue</th><th>Priority queue</th></tr></thead>
+      <tbody id="simBody"></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const PRI = {1:'Emergency', 2:'Urgent', 3:'Normal'};
+const AVG = {1:20, 2:15, 3:10};                       // average consult minutes
+const DOCTORS = ['Dr.Rao', 'Dr.Priya', 'Dr.Kumar'];
+const t0 = Date.now();
+const now = () => (Date.now() - t0) / 1000;           // demo clock: 1 s = 1 min
+
+let queue = [];                                       // sorted waiting list
+let rooms = DOCTORS.map(() => null);
+let nextToken = 1;
+let st = { n:[0,0,0,0], w:[0,0,0,0], max:0 };         // index 0 = overall
+
+const $ = id => document.getElementById(id);
+const tag = p => `<span class="tag p${p}">${PRI[p]}</span>`;
+const fmt = x => (Math.round(x * 10) / 10).toFixed(1);
+
+function insertSorted(list, patient, key) {
+  // after every patient with same or better priority => FIFO inside a priority
+  let i = 0;
+  while (i < list.length && key(list[i]) <= key(patient)) i++;
+  list.splice(i, 0, patient);
+}
+
+function estWait(index) {
+  let total = 0;
+  for (let i = 0; i < index; i++) total += AVG[queue[i].priority];
+  return Math.round(total / DOCTORS.length);
+}
+
+$('form').addEventListener('submit', e => {
+  e.preventDefault();
+  const p = { token: nextToken++, name: $('name').value.trim(), age: +$('age').value,
+              complaint: $('complaint').value.trim(), priority: +$('priority').value,
+              arrival: now(), start: null };
+  insertSorted(queue, p, x => x.priority);
+  $('msg').textContent = `Token #${p.token} issued to ${p.name}. Estimated wait: ${estWait(queue.indexOf(p))} min.`;
+  e.target.reset(); $('priority').value = '3';
+  render();
+});
+
+function callNext() {
+  const d = rooms.findIndex(r => r === null);
+  if (d < 0 || queue.length === 0) return;
+  const p = queue.shift();
+  p.start = now(); rooms[d] = p;
+  const w = p.start - p.arrival;
+  st.n[0]++; st.n[p.priority]++; st.w[0] += w; st.w[p.priority] += w;
+  st.max = Math.max(st.max, w);
+  render();
+}
+$('callNext').addEventListener('click', callNext);
+
+function finish(d) { rooms[d] = null; render(); }
+
+function render() {
+  $('clock').textContent = Math.floor(now());
+  $('doctors').innerHTML = DOCTORS.map((name, i) => rooms[i]
+    ? `<div class="doc"><div><b>${name}</b> <span class="busy">busy</span><br>
+         <span class="muted">#${rooms[i].token} ${rooms[i].name} ${tag(rooms[i].priority)}</span></div>
+         <button onclick="finish(${i})">Finish</button></div>`
+    : `<div class="doc"><div><b>${name}</b> <span class="free">free</span></div></div>`).join('');
+  $('callNext').disabled = queue.length === 0 || rooms.every(r => r !== null);
+
+  $('queue').innerHTML = queue.map((p, i) =>
+    `<tr><td>${i + 1}</td><td>#${p.token}</td><td>${p.name}</td><td>${p.complaint}</td>
+     <td>${tag(p.priority)}</td><td>${Math.floor(now() - p.arrival)} min</td>
+     <td>${estWait(i)} min</td></tr>`).join('');
+  $('empty').textContent = queue.length ? '' : 'No patients waiting.';
+
+  const avg = i => st.n[i] ? fmt(st.w[i] / st.n[i]) : '0.0';
+  $('stats').innerHTML = [
+    [st.n[0], 'Patients called'], [queue.length, 'Still waiting'],
+    [avg(0), 'Avg wait (min)'], [avg(1), 'Emergency avg'],
+    [avg(2), 'Urgent avg'], [avg(3), 'Normal avg'], [fmt(st.max), 'Longest wait']
+  ].map(([v, l]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join('');
+}
+
+/* ---------------- simulation ---------------- */
+function mulberry32(a) {                              // small seeded random generator
+  return () => { a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+
+function simulate(usePriority, doctors = 3, minutes = 480, seed = 7) {
+  const rnd = mulberry32(seed);
+  const gauss = (m, s) => m + s * Math.sqrt(-2 * Math.log(1 - rnd())) * Math.cos(2 * Math.PI * rnd());
+  const q = [], rooms = Array(doctors).fill(null);
+  const n = [0,0,0,0], w = [0,0,0,0];
+  let token = 1;
+  for (let t = 0; t < minutes; t++) {
+    for (let d = 0; d < doctors; d++)
+      if (rooms[d] && rooms[d].start + rooms[d].duration <= t) rooms[d] = null;
+    if (rnd() < 0.27) {                               // busy day: ~0.27 arrivals per minute
+      const r = rnd();
+      const pr = r < 0.10 ? 1 : r < 0.40 ? 2 : 3;
+      const p = { token: token++, priority: pr, arrival: t,
+                  duration: Math.max(5, Math.floor(gauss(AVG[pr], 3))) };
+      insertSorted(q, p, x => usePriority ? x.priority : 0);
+    }
+    for (let d = 0; d < doctors && q.length; d++) {
+      if (rooms[d] === null) {
+        const p = q.shift(); p.start = t; rooms[d] = p;
+        const wait = t - p.arrival;
+        n[0]++; n[p.priority]++; w[0] += wait; w[p.priority] += wait;
+      }
+    }
+  }
+  return w.map((x, i) => n[i] ? x / n[i] : 0);
+}
+
+$('simBtn').addEventListener('click', () => {
+  const fifo = simulate(false), prio = simulate(true);
+  const rows = [['Emergency',1], ['Urgent',2], ['Normal',3], ['Overall',0]];
+  $('simBody').innerHTML = rows.map(([label, i]) =>
+    `<tr><td>${label}</td><td>${fmt(fifo[i])}</td><td><b>${fmt(prio[i])}</b></td></tr>`).join('');
+  $('simTable').style.display = 'table';
+});
+
+setInterval(render, 1000);
+render();
+</script>
+</body>
+</html>
